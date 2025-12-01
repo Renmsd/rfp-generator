@@ -5,9 +5,11 @@ from typing import TypedDict, Annotated
 from graph_core.field_map import FIELD_MAP
 import operator
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 
 
+# -----------------------------------------------------
+# State Format
+# -----------------------------------------------------
 class State(TypedDict):
     raw_input: str
     decisions: dict
@@ -16,6 +18,9 @@ class State(TypedDict):
     completed_sections: Annotated[list, operator.add]
 
 
+# -----------------------------------------------------
+# Generate Auto Dates
+# -----------------------------------------------------
 def generate_auto_dates(issue_date: str | None):
     if issue_date:
         base = datetime.strptime(issue_date, "%Y-%m-%d")
@@ -33,26 +38,20 @@ def generate_auto_dates(issue_date: str | None):
     }
 
 
+# -----------------------------------------------------
+# PURE ASYNC LLM CALL — SAFE FOR RAILWAY
+# -----------------------------------------------------
 async def _call_llm_async(llm, prompt: str) -> str:
-    if hasattr(llm, "ainvoke"):
-        try:
-            res = await llm.ainvoke(prompt)
-            return getattr(res, "content", res).strip()
-        except Exception:
-            pass
-
-    loop = asyncio.get_running_loop()
-
-    def sync():
-        try:
-            res = llm.invoke(prompt)
-            return getattr(res, "content", res).strip()
-        except Exception:
-            return "تعذر توليد الفقرة بسبب خطأ تقني."
-
-    return await loop.run_in_executor(ThreadPoolExecutor(max_workers=6), sync)
+    try:
+        res = await llm.ainvoke(prompt)
+        return getattr(res, "content", res).strip()
+    except Exception as e:
+        return f"LLM Error: {str(e)}"
 
 
+# -----------------------------------------------------
+# Orchestrator (build decisions + choose sections)
+# -----------------------------------------------------
 def orchestrator(state: State):
 
     state.setdefault("decisions", {})
@@ -69,31 +68,36 @@ def orchestrator(state: State):
         except Exception:
             pass
 
+    # default penalty fields
     for k in ["Penalty_Deduction", "Penalty_Execute_On_Vendor", "Penalty_Suspend", "Penalty_Termination"]:
         decisions.setdefault(k, "")
 
     decisions.update(generate_auto_dates(decisions.get("Issue_Date")))
 
-    # ❗ IMPORTANT: include_sections MUST come from state, not Flask
     include = state.get("include_sections", {})
 
     sections = []
-
     for key, v in FIELD_MAP.items():
         if v == "llm":
             if key in include and not include[key]:
                 continue
             sections.append(key)
 
-    decisions["raw_input"] = state.get("raw_input")
+    decisions["raw_input"] = raw
 
     return {"sections": sections, "decisions": decisions}
 
 
+# -----------------------------------------------------
+# Generate LLM sections in parallel
+# -----------------------------------------------------
 async def generate_sections_async(llm, prompts, sections, d):
     completed = {}
 
-    independent = [s for s in sections if s in prompts and s != "Bid_Evaluation_Criteria"]
+    independent = [
+        s for s in sections
+        if s in prompts and s != "Bid_Evaluation_Criteria"
+    ]
 
     async def _generate_parallel():
         tasks = []
@@ -104,11 +108,14 @@ async def generate_sections_async(llm, prompts, sections, d):
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for sec, res in zip(independent, results):
-            completed[sec] = res if isinstance(res, str) else "تعذر توليد النص."
+            completed[sec] = (
+                res if isinstance(res, str)
+                else "تعذر توليد النص."
+            )
 
         d.update(completed)
 
-        # Generate Bid Evaluation
+        # Special section: Bid Evaluation
         if "Bid_Evaluation_Criteria" in sections:
             tech = d.get("Technical_Proposal_Documents", "")
             fin = d.get("Financial_Proposal_Documents", "")
@@ -155,14 +162,16 @@ async def generate_sections_async(llm, prompts, sections, d):
 يتم ترسية المنافسة على العرض الحاصل على أعلى مجموع نقاط بعد التقييم الفني والمالي.
 """
 
-            result = await _call_llm_async(llm, eval_prompt)
-            d["Bid_Evaluation_Criteria"] = result
+            d["Bid_Evaluation_Criteria"] = await _call_llm_async(llm, eval_prompt)
 
         return d
 
     return await _generate_parallel()
 
 
+# -----------------------------------------------------
+# Sync wrapper for LangGraph (used inside FastAPI)
+# -----------------------------------------------------
 def generate_all_sections(state, llm):
     from graph_core.prompts import PROMPTS
 
@@ -171,16 +180,24 @@ def generate_all_sections(state, llm):
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    new_decisions = loop.run_until_complete(generate_sections_async(llm, PROMPTS, sections, d))
+    new_decisions = loop.run_until_complete(
+        generate_sections_async(llm, PROMPTS, sections, d)
+    )
     loop.close()
 
     return {"decisions": new_decisions}
 
 
+# -----------------------------------------------------
+# Synthesizer
+# -----------------------------------------------------
 def synthesizer(state):
     return {"decisions": state["decisions"]}
 
 
+# -----------------------------------------------------
+# Build Graph
+# -----------------------------------------------------
 def build_orchestrator_graph(llm):
     g = StateGraph(State)
 
