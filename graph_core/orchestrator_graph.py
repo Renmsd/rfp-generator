@@ -12,6 +12,7 @@ class State(TypedDict):
     raw_input: str
     decisions: dict
     sections: list[str]
+    include_sections: dict
     completed_sections: Annotated[list, operator.add]
 
 
