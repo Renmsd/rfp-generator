@@ -1,5 +1,6 @@
 # Flask & server
-Flask>=3.0.0
+fastapi
+uvicorn
 
 # LLM and LangGraph/LangChain/OpenAI
 
@@ -10,5 +11,5 @@ python-dotenv>=1.0.1
 
 tiktoken
 
-gunicorn
+
 requests
