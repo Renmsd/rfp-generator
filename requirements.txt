@@ -1,9 +1,14 @@
-langgraph==0.1.33
-langchain-openai
-flask
-pydantic
-python-dotenv
+# Flask & server
+Flask>=3.0.0
+
+# LLM and LangGraph/LangChain/OpenAI
+
+langgraph>=0.1.0
+langchain-openai>=0.1.0
+openai>=1.50.0
+python-dotenv>=1.0.1
+
 tiktoken
-openai
+
 gunicorn
 requests
