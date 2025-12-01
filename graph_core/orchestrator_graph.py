@@ -8,9 +8,6 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 
-# -----------------------------------------------------
-# ✅ شكل الحالة (State) داخل LangGraph
-# -----------------------------------------------------
 class State(TypedDict):
     raw_input: str
     decisions: dict
@@ -18,11 +15,7 @@ class State(TypedDict):
     completed_sections: Annotated[list, operator.add]
 
 
-# -----------------------------------------------------
-# ✅ تواريخ تلقائية حسب Issue_Date
-# -----------------------------------------------------
 def generate_auto_dates(issue_date: str | None):
-    """يعتمد على Issue_Date، وإذا لم يوجد يستخدم تاريخ اليوم"""
     if issue_date:
         base = datetime.strptime(issue_date, "%Y-%m-%d")
     else:
@@ -39,12 +32,7 @@ def generate_auto_dates(issue_date: str | None):
     }
 
 
-# -----------------------------------------------------
-# ✅ استدعاء LLM (يدعم async/sync)
-# -----------------------------------------------------
 async def _call_llm_async(llm, prompt: str) -> str:
-    """يدعم llm.invoke و llm.ainvoke تلقائياً"""
-    # الطريقة الأولى: async مباشرة
     if hasattr(llm, "ainvoke"):
         try:
             res = await llm.ainvoke(prompt)
@@ -52,7 +40,6 @@ async def _call_llm_async(llm, prompt: str) -> str:
         except Exception:
             pass
 
-    # الطريقة الثانية: تشغيل invoke داخل ThreadPool
     loop = asyncio.get_running_loop()
 
     def sync():
@@ -65,15 +52,7 @@ async def _call_llm_async(llm, prompt: str) -> str:
     return await loop.run_in_executor(ThreadPoolExecutor(max_workers=6), sync)
 
 
-# -----------------------------------------------------
-# ✅ orchestrator — تجهيز البيانات وتحديد الأقسام المراد توليدها
-# -----------------------------------------------------
 def orchestrator(state: State):
-    try:
-        from flask import session
-    except:
-        session = {}
-
 
     state.setdefault("decisions", {})
     decisions = state["decisions"]
@@ -89,24 +68,20 @@ def orchestrator(state: State):
         except Exception:
             pass
 
-    # ضمان مفاتيح الجزاءات حتى لو المستخدم لم يختَر شيئًا
     for k in ["Penalty_Deduction", "Penalty_Execute_On_Vendor", "Penalty_Suspend", "Penalty_Termination"]:
         decisions.setdefault(k, "")
 
-    # إضافة التواريخ التلقائية
     decisions.update(generate_auto_dates(decisions.get("Issue_Date")))
 
-    # اختيار الـ sections وفق checkbox من المستخدم
-    include = session.get("include_sections", {})
+    # ❗ IMPORTANT: include_sections MUST come from state, not Flask
+    include = state.get("include_sections", {})
+
     sections = []
 
     for key, v in FIELD_MAP.items():
         if v == "llm":
-            # القسم اختياري وتم إزالته → skip
             if key in include and not include[key]:
-                print(f"🚫 SKIP section: {key}")
                 continue
-
             sections.append(key)
 
     decisions["raw_input"] = state.get("raw_input")
@@ -114,9 +89,6 @@ def orchestrator(state: State):
     return {"sections": sections, "decisions": decisions}
 
 
-# -----------------------------------------------------
-# ✅ توليد الفقرات بالتوازي + Bid Evaluation يعتمد على الفني والمالي
-# -----------------------------------------------------
 async def generate_sections_async(llm, prompts, sections, d):
     completed = {}
 
@@ -126,9 +98,6 @@ async def generate_sections_async(llm, prompts, sections, d):
         tasks = []
         for sec in independent:
             prompt = prompts[sec].format(**d)
-            print(f"\n🟦 Generating: {sec}")
-            print("🔹 Final Prompt Sent:\n", prompt)
-            print("---------------------------------------------------\n")
             tasks.append(_call_llm_async(llm, prompt))
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -138,7 +107,7 @@ async def generate_sections_async(llm, prompts, sections, d):
 
         d.update(completed)
 
-        # الآن نولّد Bid Evaluation Criteria بعد الفني والمالي
+        # Generate Bid Evaluation
         if "Bid_Evaluation_Criteria" in sections:
             tech = d.get("Technical_Proposal_Documents", "")
             fin = d.get("Financial_Proposal_Documents", "")
@@ -185,8 +154,6 @@ async def generate_sections_async(llm, prompts, sections, d):
 يتم ترسية المنافسة على العرض الحاصل على أعلى مجموع نقاط بعد التقييم الفني والمالي.
 """
 
-
-
             result = await _call_llm_async(llm, eval_prompt)
             d["Bid_Evaluation_Criteria"] = result
 
@@ -209,16 +176,10 @@ def generate_all_sections(state, llm):
     return {"decisions": new_decisions}
 
 
-# -----------------------------------------------------
-# ✅ synthesizer — إعادة القرارات كـ output نهائي للـ Graph
-# -----------------------------------------------------
 def synthesizer(state):
     return {"decisions": state["decisions"]}
 
 
-# -----------------------------------------------------
-# ✅ بناء LangGraph
-# -----------------------------------------------------
 def build_orchestrator_graph(llm):
     g = StateGraph(State)
 
