@@ -1,0 +1,9 @@
+langgraph==0.1.33
+langchain-openai
+flask
+pydantic
+python-dotenv
+tiktoken
+openai
+gunicorn
+requests
