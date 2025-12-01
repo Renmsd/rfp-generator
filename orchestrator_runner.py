@@ -11,15 +11,14 @@ llm = ChatOpenAI(
 graph = build_orchestrator_graph(llm)
 
 async def run_orchestrator(raw_input: dict, include_sections: dict):
+    # 🤍 Inject include_sections into state (not Flask)
     initial_state = {
         "raw_input": raw_input,
+        "include_sections": include_sections,   # <-- important
         "decisions": {},
         "sections": [],
         "completed_sections": []
     }
-
-    import flask  # لتفادي session error
-    flask.session = {"include_sections": include_sections}
 
     result = graph.invoke(initial_state)
     return result.get("decisions", {})
